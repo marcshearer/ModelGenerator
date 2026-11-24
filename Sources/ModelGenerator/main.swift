@@ -126,7 +126,7 @@ struct GeneratorConfig {
     var moConformances: [String] = ["ManagedObject"]
     var vmSuffix: String = ""
     var vmSuperclass: String = "ViewModel"
-    var vmConformances: [String] = ["DataStoreProtocol"]
+    var vmConformances: [String] = ["DataStoreProtocol, HashableObject"]
 }
 
 enum BeforeInsertEnum {
@@ -496,6 +496,8 @@ do {
         switch attribute.type {
         case .int, .int16Enum:
             additional += ", equivalent: \"\(attribute.name)\", equivalentType: .\(attribute.type)"
+        case .viewModel:
+            additional += ", equivalent: \"\(attribute.name)\", equivalentType: .viewModel"
         default:
             break
         }
@@ -541,10 +543,32 @@ do {
             outputLines.append("")
             outputLines.append("    \(memberAccess) var \(attribute.name): \(viewModelEntity)\(config.vmSuffix)? {")
             outputLines.append("        get { \(viewModelEntity)\(config.vmSuffix).\(attribute.name)(id: \(attribute.name)\(attribute.type.suffix)) }")
-            outputLines.append("        set { \(attribute.name)\(attribute.type.suffix) = newValue?.\(attribute.name)\(attribute.type.suffix) }")
+            outputLines.append("        set { \(attribute.name)\(attribute.type.suffix) = newValue?.id }")
             outputLines.append("    }")
         }
     }
+    
+    // MARK: - Key-Value overrides
+    
+    outputLines.append("    override \(memberAccess) func value(forKey key: String) -> Any? {")
+    outputLines.append("        switch key {")
+    for attribute in attributes {
+        outputLines.append("            case \"\(attribute.name)\": self.\(attribute.name) as Any")
+    }
+    outputLines.append("            default: fatalError(\"Unknown property '\\(key)'\")")
+    outputLines.append("        }")
+    outputLines.append("    }")
+    outputLines.append("")
+    
+    outputLines.append("    override \(memberAccess) func setValue(_ value: Any?, forKey key: String) {")
+    outputLines.append("        switch key {")
+    for attribute in attributes {
+        outputLines.append("            case \"\(attribute.name)\": self.\(attribute.name) = value as\(attribute.optional ? "?" : "!") \(attribute.customType(vmSuffix: config.vmSuffix))")
+    }
+    outputLines.append("            default: fatalError(\"Unknown property '\\(key)'\")")
+    outputLines.append("        }")
+    outputLines.append("    }")
+    outputLines.append("")
     
     outputLines.append("}")
     outputLines.append("")
@@ -635,6 +659,23 @@ do {
             break
         }
     }
+    outputLines.append("    }")
+    outputLines.append("")
+    
+    outputLines.append("    \(memberAccess) var saveMessage: String {")
+    outputLines.append("        switch true {")
+    for attribute in attributes {
+        if attribute.beforeInsert == .nonBlank || attribute.beforeInsert == .unique {
+            let blank = "\(attribute.optional ? "\(attribute.name) == nil && " : "")\(attribute.name) == \(attribute.type.initialValue)"
+            outputLines.append("        case \(blank): \"\(attribute.desc) must be non-blank\"")
+        }
+        if attribute.beforeInsert == .unique {
+            let exists = "\(config.name)\(config.vmSuffix).masterData.contains(where: {$0.\(attribute.name) == \(attribute.name) && $0 != self})"
+            outputLines.append("        case \(exists): \"\(attribute.desc) must be unique\"")
+        }
+    }
+    outputLines.append("        default: \"\"")
+    outputLines.append("        }")
     outputLines.append("    }")
     outputLines.append("")
     
