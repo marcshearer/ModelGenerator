@@ -17,9 +17,9 @@
 // #@ vmConformances:   ViewModelProtocol
 //
 // Next include an Attribute header followed by values for each attribute in the form
-// AttributeName, Type,    ViewModel,   Optional,    Id,    InitialValue,    IncludeInit, BeforeInsert,    Lookup,    EnumName,    EnumValue1,   EnumValue2,   ...
-// <Name1>,       <Type1>, ViewModel1,   <Optional1>, <Id1>, <InitialValue1>, <InInit1>,   <BeforeInsert1>, <Lookup1>, <EnumName1>, <EnumValue1>, <EnumValue2>, ...
-// <Name2>,       <Type2>, ViewModel2,  <Optional2>, <Id2>, <InitialValue2>, <InInit2>,   <BeforeInsert2>,
+// AttributeName, Type,    ViewModel,    Optional,    Id,    InitialValue,    InInit,    Resequence,    BeforeInsert,    Lookup,    EnumName,    EnumValue1,   EnumValue2,   ...
+// <Name1>,       <Type1>, <ViewModel1>, <Optional1>, <Id1>, <InitialValue1>, <InInit1>, <Resequence1>, <BeforeInsert1>, <Lookup1>, <EnumName1>, <EnumValue1>, <EnumValue2>, ...
+// <Name2>,       <Type2>, <ViewModel2>, <Optional2>, <Id2>, <InitialValue2>, <InInit2>, <Resequence1>, <BeforeInsert2>
 
 import Foundation
 import CoreData
@@ -55,7 +55,7 @@ func extractEntityName(from fileURL: URL) throws -> String {
     return fileURL.deletingPathExtension().lastPathComponent
 }
 
-func uncapitalised(_ string: String) -> String {
+func uncapitaliseFirst(_ string: String) -> String {
     guard let first = string.first else { return string }
     return first.lowercased() + string.dropFirst()
 }
@@ -77,7 +77,7 @@ if rawArgs.first == "--manifest" {
         }
 
         let listEntries = entityNames
-            .map { "        \(uncapitalised($0))Entity" }
+            .map { "        \(uncapitaliseFirst($0))Entity" }
             .joined(separator: ",\n")
 
         let manifestCode = """
@@ -300,6 +300,7 @@ struct AttributeDefinition {
     var optional: Bool = false
     var initValue: String = ""
     var inInit: InInitEnum = .no
+    var resequence: Bool = false
     var id: Bool = false
     var beforeInsert: BeforeInsertEnum = .any
     var lookup: Bool = false
@@ -431,6 +432,8 @@ do {
                         attribute.initValue = value
                     case "ininit":
                         attribute.inInit = (value.lowercased() == "yes" || value.lowercased() == "true" ? .yes : (value.lowercased() == "optional" ? .optional : .no))
+                    case "resequence":
+                        attribute.resequence = (value.lowercased() == "true")
                     case "id":
                         attribute.id = (value.lowercased() == "true")
                     case "beforeinsert":
@@ -474,7 +477,7 @@ do {
         ""
     ]
     
-    let uncapitalisedName = uncapitalised(config.name)
+    let uncapitalisedName = uncapitaliseFirst(config.name)
     
     // MARK: - Preamble
     
@@ -549,6 +552,9 @@ do {
     }
     
     // MARK: - Key-Value overrides
+    
+    outputLines.append("// MARK: - Key-value helpers")
+    outputLines.append("")
     
     outputLines.append("    override \(memberAccess) func value(forKey key: String) -> Any? {")
     outputLines.append("        switch key {")
@@ -639,6 +645,8 @@ do {
     
     // MARK: - Miscellaneous variables / functions
     
+    outputLines.append("// MARK: - Miscellaneous variables / functions")
+    outputLines.append("")
     outputLines.append("    \(memberAccess) override var newManagedObject: NSManagedObject { \(config.name)\(config.moSuffix)() }")
     outputLines.append("")
     
@@ -647,6 +655,9 @@ do {
     outputLines.append("    }")
     outputLines.append("")
     
+    
+    outputLines.append("// MARK: - record-checking variables / functions")
+    outputLines.append("")
     outputLines.append("    \(memberAccess) override func beforeInsert() {")
     for attribute in attributes {
         switch attribute.beforeInsert {
@@ -654,7 +665,11 @@ do {
             let exists = "\(config.name)\(config.vmSuffix).masterData.contains(where: {$0.\(attribute.name) == \(attribute.name) && $0 != self})"
             outputLines.append("        assert(!\(exists), \"\(attribute.desc) must be unique\")")
         case .nonBlank:
-            outputLines.append("        assert(\(attribute.optional ? "\(attribute.name) != nil && " : "")\(attribute.name) != \(attribute.type.initialValue), \"\(attribute.desc) must be non-blank\")")
+            if attribute.type == .viewModel {
+                outputLines.append("        assert(\(attribute.name) != nil)")
+            } else {
+                outputLines.append("        assert(\(attribute.optional ? "\(attribute.name) != nil && " : "")\(attribute.name)\(attribute.optional ? "!" : "") != \(attribute.type.initialValue), \"\(attribute.desc) must be non-blank\")")
+            }
         case .any:
             break
         }
@@ -666,7 +681,12 @@ do {
     outputLines.append("        switch true {")
     for attribute in attributes {
         if attribute.beforeInsert == .nonBlank || attribute.beforeInsert == .unique {
-            let blank = "\(attribute.optional ? "\(attribute.name) == nil && " : "")\(attribute.name) == \(attribute.type.initialValue)"
+            var blank: String
+            if attribute.type == .viewModel {
+                blank = "\(attribute.name) != nil"
+            } else {
+                blank = "\(attribute.optional ? "\(attribute.name) == nil && " : "")\(attribute.name) == \(attribute.type.initialValue)"
+            }
             outputLines.append("        case \(blank): \"\(attribute.desc) must be non-blank\"")
         }
         if attribute.beforeInsert == .unique {
@@ -684,6 +704,11 @@ do {
     outputLines.append(    "    }")
     outputLines.append("")
     
+    // MARK: Lookup routines
+    
+    outputLines.append("// MARK: - Lookup routines")
+    outputLines.append("")
+    
     for attribute in attributes {
         if attribute.lookup {
             let parameter = (attribute.id ? "id" : attribute.name)
@@ -695,6 +720,9 @@ do {
     }
     
     // MARK: - Key-Value overrides
+    
+    outputLines.append("// MARK: - Key-Value helpers")
+    outputLines.append("")
     
     outputLines.append("    override \(memberAccess) func value(forKey key: String) -> Any? {")
     outputLines.append("        switch key {")
@@ -718,6 +746,9 @@ do {
     
     // MARK: - Data load
     
+    outputLines.append("// MARK: - Data load function")
+    outputLines.append("")
+    
     outputLines.append("    override class \(memberAccess) func loadData(createDefaultData: Bool) {")
     outputLines.append("        let \(uncapitalisedName)\(config.moSuffix)s = CoreData.fetch(from: \(uncapitalisedName)Entity.name) as! [\(config.name)\(config.moSuffix)]")
     outputLines.append("        Self.masterData = []")
@@ -730,7 +761,39 @@ do {
     outputLines.append("    }")
     outputLines.append("")
     
+    // MARK: Resequence routines
+    
+    if attributes.map({$0.resequence}).contains(true) {
+        outputLines.append("// MARK: - Resequencing functions")
+        outputLines.append("")
+        
+        for attribute in attributes {
+            if attribute.resequence {
+                outputLines.append("    public static func move\(capitaliseFirst(attribute.name))(\(uncapitalisedName)s indexSet: IndexSet, to index: Int) {")
+                outputLines.append("        \(config.name)\(config.vmSuffix).masterData.move(fromOffsets: indexSet, toOffset: index)")
+                outputLines.append("        self.update\(capitaliseFirst(attribute.name))Order()")
+                outputLines.append("    }")
+                outputLines.append("")
+                outputLines.append("    public static func update\(capitaliseFirst(attribute.name))Order() {")
+                outputLines.append("        var last = 0")
+                outputLines.append("        for \(uncapitalisedName) in \(config.name)\(config.vmSuffix).masterData {")
+                outputLines.append("            if \(uncapitalisedName).sequence != last + 1 {")
+                outputLines.append("                \(uncapitalisedName).sequence = last + 1")
+                outputLines.append("                \(uncapitalisedName).save()")
+                outputLines.append("            }")
+                outputLines.append("            last = \(uncapitalisedName).sequence")
+                outputLines.append("        }")
+                outputLines.append("    }")
+                outputLines.append("")
+            }
+        }
+        outputLines.append("")
+    }
+    
     // MARK: - Descriptions
+    
+    outputLines.append("// MARK: - Record descriptions")
+    outputLines.append("")
     
     outputLines.append("    override \(memberAccess) var description: String {")
     var description = ""
@@ -738,7 +801,7 @@ do {
         if description != "" {
             description += " "
         }
-        description += "\(upperFirst(attribute.name)): <\\("
+        description += "\(capitaliseFirst(attribute.name)): <\\("
         if attribute.optional {
             description += "\(attribute.name) == nil ? \"\" : "
         }
@@ -751,9 +814,9 @@ do {
     outputLines.append("    override public var debugDescription: String { self.description }")
     outputLines.append("")
     
-    outputLines.append("    // Mark: Data helper routines")
+    outputLines.append("    // MARK: - Data helper routines")
     outputLines.append("")
-        
+    
     outputLines.append("    public func insert() {")
     outputLines.append("        insert(viewModel: self)")
     outputLines.append("    }")
@@ -778,15 +841,22 @@ do {
     
     // MARK: - Enumerations
     
-    for attribute in attributes {
-        if attribute.type == .int16Enum && !attribute.enumValues.isEmpty {
-            outputLines.append("@objc \(memberAccess) enum \(attribute.enumName ?? "Unspecified") : Int16, Int16Enum {")
-            for (value, name) in attribute.enumValues {
-                outputLines.append("    case \(name) = \(value)")
+    if attributes.map({$0.enumValues.isEmpty}).contains(false) {
+        
+        outputLines.append("    // MARK: - Enumerations")
+        outputLines.append("")
+        
+        for attribute in attributes {
+            if attribute.type == .int16Enum && !attribute.enumValues.isEmpty {
+                outputLines.append("@objc \(memberAccess) enum \(attribute.enumName ?? "Unspecified") : Int16, Int16Enum {")
+                for (value, name) in attribute.enumValues {
+                    outputLines.append("    case \(name) = \(value)")
+                }
+                outputLines.append("}")
             }
-            outputLines.append("}")
         }
     }
+        
     
     // MARK: - Closing
     
@@ -797,12 +867,12 @@ do {
         (attribute.initValue != "" ? " = \(attribute.initValue)" : (attribute.optional ? "? = nil" : (attribute.type == .int16Enum ? " = \(attribute.enumName ?? "Unspecified")(rawValue: 0)!" : " = \(attribute.type.initialValue)")))
     }
     
-    func uncapitalised(_ string: String) -> String {
+    func uncapitaliseFirst(_ string: String) -> String {
         guard let first = string.first else { return string }
         return first.lowercased() + string.dropFirst()
     }
     
-    func upperFirst(_ string: String) -> String {
+    func capitaliseFirst(_ string: String) -> String {
         guard let first = string.first else { return string }
         return first.uppercased() + string.dropFirst()
     }
